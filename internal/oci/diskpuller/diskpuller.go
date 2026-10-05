@@ -25,9 +25,10 @@ type NameFromDiskDescriptorFunc func(diskDescriptor descriptor.Descriptor) (stri
 type InitializeDecompressorFunc func(compressedReader io.Reader) io.Reader
 
 type diskTask struct {
-	Desc   descriptor.Descriptor
-	Path   string
-	Offset int64
+	Desc             descriptor.Descriptor
+	Path             string
+	Offset           int64
+	UncompressedSize int64
 }
 
 func PullDisks(
@@ -64,9 +65,10 @@ func PullDisks(
 		}
 
 		diskTasks = append(diskTasks, &diskTask{
-			Desc:   disk,
-			Path:   filepath.Join(vmDir.Path(), diskName),
-			Offset: diskNameToOffset[diskName],
+			Desc:             disk,
+			Path:             filepath.Join(vmDir.Path(), diskName),
+			Offset:           diskNameToOffset[diskName],
+			UncompressedSize: uncompressedSize,
 		})
 
 		diskNameToOffset[diskName] += uncompressedSize
@@ -148,6 +150,8 @@ func (diskTask *diskTask) process(
 		return err
 	}
 
+	defer diskFile.Close()
+
 	diskFileAtOffset := io.NewOffsetWriter(diskFile, diskTask.Offset)
 
 	// Pull disk layer from the OCI registry
@@ -161,7 +165,23 @@ func (diskTask *diskTask) process(
 	progressBarReader := progressbar.NewReader(blobReader, progressBar)
 	decompressor := initializeDecompressor(&progressBarReader)
 
-	if err := sparseio.Copy(diskFileAtOffset, decompressor); err != nil {
+	// Keep every layer within its assigned range, including sparse zero blocks.
+	limited := &io.LimitedReader{R: decompressor, N: diskTask.UncompressedSize}
+	if err := sparseio.Copy(diskFileAtOffset, limited); err != nil {
+		return err
+	}
+	if limited.N != 0 {
+		return fmt.Errorf("%w: disk layer %s decoded %d bytes, expected %d", io.ErrUnexpectedEOF,
+			diskTask.Desc.Digest, diskTask.UncompressedSize-limited.N, diskTask.UncompressedSize)
+	}
+
+	// Read through the decompressor's end marker/checksum without writing beyond
+	// this layer. One additional decoded byte means the declared size is wrong.
+	var extra [1]byte
+	if n, err := io.ReadFull(decompressor, extra[:]); n != 0 {
+		return fmt.Errorf("disk layer %s exceeds its declared uncompressed size of %d bytes",
+			diskTask.Desc.Digest, diskTask.UncompressedSize)
+	} else if err != io.EOF {
 		return err
 	}
 
