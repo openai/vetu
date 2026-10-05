@@ -41,6 +41,10 @@ func PullDisks(
 	uncompressedSizeAnnotation string,
 	initializeDecompressor InitializeDecompressorFunc,
 ) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	// Process VM's disks by converting them into
 	// disk tasks for further parallel processing
 	var diskTasks []*diskTask
@@ -130,6 +134,11 @@ func PullDisks(
 	// Prefer diskTasksErr over finishErr
 	if diskTasksErr != nil {
 		return diskTasksErr
+	}
+
+	// Cancellation can skip all tasks or arrive after the final read.
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	return finishErr
