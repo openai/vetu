@@ -8,7 +8,7 @@ import (
 	"os"
 )
 
-func FetchURLToFile(ctx context.Context, url string) (string, error) {
+func FetchURLToFile(ctx context.Context, url string) (path string, err error) {
 	resp, err := FetchURL(ctx, url)
 	if err != nil {
 		return "", err
@@ -20,11 +20,22 @@ func FetchURLToFile(ctx context.Context, url string) (string, error) {
 		return "", err
 	}
 
+	defer func() {
+		// The caller owns only a completed download. Close before removing on Windows.
+		_ = tempFile.Close()
+		if err != nil {
+			_ = os.Remove(tempFile.Name())
+		}
+	}()
+
 	if _, err := io.Copy(tempFile, resp.Body); err != nil {
 		return "", err
 	}
 
-	return tempFile.Name(), tempFile.Close()
+	if err := tempFile.Close(); err != nil {
+		return "", err
+	}
+	return tempFile.Name(), nil
 }
 
 func FetchURL(ctx context.Context, url string) (*http.Response, error) {
@@ -41,6 +52,7 @@ func FetchURL(ctx context.Context, url string) (*http.Response, error) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
 		return nil, fmt.Errorf("failed to fetch %s: HTTP %d", url, resp.StatusCode)
 	}
 
