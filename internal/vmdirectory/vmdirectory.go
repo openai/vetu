@@ -70,6 +70,7 @@ func (vmDir *VMDirectory) Running() bool {
 	if err != nil {
 		return false
 	}
+	defer lock.Close()
 
 	pid, err := lock.Pid()
 	if err != nil {
